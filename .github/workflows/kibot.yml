@@ -1,0 +1,266 @@
+name: KiBot
+
+on:
+  workflow_dispatch:
+  
+  push:
+    paths:
+    - "*.kicad_sch"
+    - "*.kicad_pcb"
+    - "*.kicad_pro"
+    - "**/*kibot.yml"
+  pull_request:
+    paths:
+    - "*.kicad_sch"
+    - "*.kicad_pcb"
+    - "*.kicad_pro"
+    - "**/*kibot.yml"
+
+env:
+  schema: "*.kicad_sch"
+  board: "*.kicad_pcb"
+  dir: .
+
+jobs:
+  CreateRelease:
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+      - name: Extract branch name
+        shell: bash
+        run: echo "##[set-output name=branch;]$(echo ${GITHUB_REF#refs/heads/})"
+        id: extract_branch
+      - name: Get current time
+        uses: josStorer/get-current-time@v2
+        id: current-time
+        with:
+          format: YYYYMMDD-HHmmss
+          utcOffset: "+01:00"
+      - name: Use current time
+        env:
+          TIME: "${{ steps.current-time.outputs.time }}"
+          R_TIME: "${{ steps.current-time.outputs.readableTime }}"
+          F_TIME: "${{ steps.current-time.outputs.formattedTime }}"
+          YEAR: "${{ steps.current-time.outputs.year }}"
+          DAY: "${{ steps.current-time.outputs.day }}"
+        run: echo $TIME $R_TIME $F_TIME $YEAR $DAY
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.current-time.outputs.formattedTime }}
+          release_name: ${{ github.event.repository.name }} - Release ${{ steps.current-time.outputs.formattedTime }} - Branch ${{ steps.extract_branch.outputs.branch }}
+          draft: false
+          prerelease: false
+          
+  ExportDocs:
+    runs-on: ubuntu-latest
+    needs: [CreateRelease]
+    container:
+      image: setsoft/kicad_auto:ki6
+    steps:
+      - uses: actions/checkout@v2
+      - name: Create DOCS from project
+        run: | 
+          kibot -c kibot.yml -e ${{env.schema}} -b ${{env.board}} -d ${{env.dir}} -s run_erc,run_drc -v \
+            ibom.html octopart.csv schematic.pdf schematic.svg board_top.pdf board_bottom.pdf
+      - uses: actions/upload-artifact@v2
+        if: ${{success()}}
+        with:
+          name: ${{github.event.repository.name}}_docs
+          if-no-files-found: error
+          path: |
+            ${{env.dir}}/docs/**
+            !${{env.dir}}/**/*.ogv
+            !${{env.dir}}/**/*.log
+      - name: Install ZIP
+        run: apt update && apt install -y zip
+      - name: Zip Docs
+        uses: TheDoctor0/zip-release@0.6.2
+        with:
+          path: ${{env.dir}}/docs/
+          type: 'zip'
+          recursive_exclusions: '*.bak *.git* *.yml *.ogv'
+          filename: ${{ github.event.repository.name }}-Docs.zip
+      - name: Upload Release Asset
+        id: upload-release-docs 
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{needs.CreateRelease.outputs.upload_url}} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
+          asset_path: ./${{ github.event.repository.name }}-Docs.zip
+          asset_name: /${{ github.event.repository.name }}-Docs.zip
+          asset_content_type: application/zip
+      - name: Get Schematic Name
+        id: schematic-name
+        shell: bash
+        run: |
+          cd ${{env.dir}}/docs/
+          echo "::set-output name=schematic-file::$(find *-schematic.pdf)"
+      - name: Upload Schematic
+        id: upload-release-schematic
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{needs.CreateRelease.outputs.upload_url}} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
+          asset_path: ${{env.dir}}/docs/${{ steps.schematic-name.outputs.schematic-file }}
+          asset_name: ${{ github.event.repository.name }}-Schematic.pdf
+          asset_content_type: application/pdf
+          
+  ExportGerber:
+    runs-on: ubuntu-latest
+    needs: [CreateRelease]
+    container:
+      image: setsoft/kicad_auto:ki6
+    steps:
+      - uses: actions/checkout@v2
+      - name: Create GERBER from project
+        run: |
+          kibot -c kibot.yml -e ${{env.schema}} -b ${{env.board}} -d ${{env.dir}} -s run_erc,run_drc -v \
+            gerbers.gbr drills.gbr drills.drl pickandplace.csv bom.csv
+      - uses: actions/upload-artifact@v2
+        if: ${{success()}}
+        with:
+          name: ${{github.event.repository.name}}_gerbers
+          if-no-files-found: error
+          path: |
+            ${{env.dir}}/gerbers/**
+            !${{env.dir}}/**/*.ogv
+            !${{env.dir}}/**/*.log
+      - name: Install ZIP
+        run: apt update && apt install -y zip
+      - uses: TheDoctor0/zip-release@0.6.2
+        with:
+          path: ${{env.dir}}/gerbers/
+          type: 'zip'
+          recursive_exclusions: '*.bak *.git* *.yml *.ogv'
+          filename: ${{ github.event.repository.name }}-Gerbers.zip
+      - name: Upload Release Asset
+        id: upload-release-gerbers 
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{needs.CreateRelease.outputs.upload_url}} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
+          asset_path: ./${{ github.event.repository.name }}-Gerbers.zip
+          asset_name: /${{ github.event.repository.name }}-Gerbers.zip
+          asset_content_type: application/zip
+            
+  ExportDXF:
+    runs-on: ubuntu-latest
+    needs: [CreateRelease]
+    container:
+      image: setsoft/kicad_auto:ki6
+    steps:
+      - uses: actions/checkout@v2
+      - name: create DXF from project
+        run: | 
+          kibot -c kibot.yml -e ${{env.schema}} -b ${{env.board}} -d ${{env.dir}} -s run_erc,run_drc -v \
+            model.step openboardview.brd autocad.dxf
+      - uses: actions/upload-artifact@v2
+        if: ${{success()}}
+        with:
+          name: ${{github.event.repository.name}}_cad
+          if-no-files-found: error
+          path: |
+            ${{env.dir}}/cad/**
+            !${{env.dir}}/**/*.ogv
+            !${{env.dir}}/**/*.log
+      - name: Install ZIP
+        run: apt update && apt install -y zip
+      - uses: TheDoctor0/zip-release@0.6.2
+        with:
+          path: ${{env.dir}}/cad/
+          type: 'zip'
+          recursive_exclusions: '*.bak *.git* *.yml *.ogv'
+          filename: ${{ github.event.repository.name }}-Cad.zip
+      - name: Upload Release Asset
+        id: upload-release-dxf
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{needs.CreateRelease.outputs.upload_url}} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
+          asset_path: ./${{ github.event.repository.name }}-Cad.zip
+          asset_name: /${{ github.event.repository.name }}-Cad.zip
+          asset_content_type: application/zip
+            
+  ExportImages:
+    runs-on: ubuntu-latest
+    needs: [CreateRelease]
+    container:
+      image: setsoft/kicad_auto:ki6
+    steps:
+      - uses: actions/checkout@v2
+      - name: Create SVG from project
+        run: | 
+          kibot -c kibot.yml -e ${{env.schema}} -b ${{env.board}} -d ${{env.dir}} -s run_erc,run_drc -v \
+            board_black_top.svg board_black_bottom.svg
+      - uses: actions/upload-artifact@v2
+        if: ${{success()}}
+        with:
+          name: ${{github.event.repository.name}}_img
+          if-no-files-found: error
+          path: |
+            ${{env.dir}}/img/**
+            !${{env.dir}}/**/*.ogv
+            !${{env.dir}}/**/*.log
+      - name: Install ZIP
+        run: apt update && apt install -y zip
+      - uses: TheDoctor0/zip-release@0.6.2
+        with:
+          path: ${{env.dir}}/img/
+          type: 'zip'
+          recursive_exclusions: '*.bak *.git* *.yml *.ogv'
+          filename: ${{ github.event.repository.name }}-Images.zip
+      - name: Upload Release Asset
+        id: upload-release-images
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{needs.CreateRelease.outputs.upload_url}} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
+          asset_path: ./${{ github.event.repository.name }}-Images.zip
+          asset_name: /${{ github.event.repository.name }}-Images.zip
+          asset_content_type: application/zip
+            
+  CreateZipFile:
+    runs-on: ubuntu-latest
+    needs: [CreateRelease]
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+      - name: Zip Release
+        uses: TheDoctor0/zip-release@0.6.2
+        with:
+          # Tool to use for archiving
+          type: 'zip'
+          # Filename for archive
+          filename: ${{ github.event.repository.name }}-Project.zip
+          # Base path for archive files
+          #path: .
+          # Working directory before zipping
+          #directory: .
+          # List of excluded files / directories
+          exclusions: '.*/ /*backups/* /Foto_Italab/* /NXP_Docs/* /OLD/*'
+          # List of excluded files / directories with recursive wildcards (only applies on Windows with `zip` type)
+          recursive_exclusions: '*.bak *.git* *.yml *cache*'
+      - name: Upload Release Asset
+        id: upload-release-asset 
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{needs.CreateRelease.outputs.upload_url}} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
+          asset_path: ./${{ github.event.repository.name }}-Project.zip
+          asset_name: /${{ github.event.repository.name }}-Project.zip
+          asset_content_type: application/zip

@@ -1,0 +1,97 @@
+name: Export KiCad data
+
+on:
+  #push:
+  #  paths:
+  #  - '**.kicad_sch'
+  #  - '**.kicad_pcb'
+  #pull_request:
+  #  paths:
+  #    - '**.kicad_sch'
+  #    - '**.kicad_pcb'
+      
+  workflow_dispatch:
+
+jobs:
+  example:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+      - uses: nerdyscout/kicad-exports@v2.3.1
+        with:
+        # Required - kibot config file
+          config: docs.schema.kibot.yaml
+        # optional - prefix to output defined in config
+          dir: docs
+        # optional - schematic file
+          schema: '*.kicad_sch'
+          board: '*.kicad_pcb'
+        # optional - verbose output info
+          verbose: 1
+      - name: Extract branch name
+        shell: bash
+        run: echo "##[set-output name=branch;]$(echo ${GITHUB_REF#refs/heads/})"
+        id: extract_branch
+      - name: Zip Release
+        # You may pin to the exact commit or the version.
+        # uses: TheDoctor0/zip-release@09336613be18a8208dfa66bd57efafd9e2685657
+        uses: TheDoctor0/zip-release@0.6.2
+        with:
+          # Tool to use for archiving
+          type: 'zip'
+          # Filename for archive
+          filename: PA_MRFX1K80H-${{ steps.extract_branch.outputs.branch }}.zip
+          # Base path for archive files
+          #path: .
+          # Working directory before zipping
+          #directory: .
+          # List of excluded files / directories
+          exclusions: '*.bak *.git* /*node_modules/* .editorconfig /*backups/* /Foto_Italab/* /NXP_Docs/* /OLD/* *cache'
+          # List of excluded files / directories with recursive wildcards (only applies on Windows with `zip` type)
+          #recursive_exclusions: '*.bak *.git*'
+      - name: Get current time
+        uses: josStorer/get-current-time@v2
+        id: current-time
+        with:
+          format: YYYYMMDD-HHmmss
+          utcOffset: "+01:00"
+      - name: Use current time
+        env:
+          TIME: "${{ steps.current-time.outputs.time }}"
+          R_TIME: "${{ steps.current-time.outputs.readableTime }}"
+          F_TIME: "${{ steps.current-time.outputs.formattedTime }}"
+          YEAR: "${{ steps.current-time.outputs.year }}"
+          DAY: "${{ steps.current-time.outputs.day }}"
+        run: echo $TIME $R_TIME $F_TIME $YEAR $DAY
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.current-time.outputs.formattedTime }}
+          release_name: Release ${{ steps.current-time.outputs.formattedTime }} - PA_MRFX1K80H - ${{ steps.extract_branch.outputs.branch }}
+          draft: false
+          prerelease: false
+      - name: Upload Release Asset
+        id: upload-release-asset 
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
+          asset_path: ./PA_MRFX1K80H-${{ steps.extract_branch.outputs.branch }}.zip
+          asset_name: PA_MRFX1K80H-${{ steps.extract_branch.outputs.branch }}.zip
+          asset_content_type: application/zip
+      - name: Upload Release Asset
+        id: upload-schematic-pdf 
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
+          asset_path: ./docs/AmpliOneLiter-schematic.pdf
+          asset_name: AmpliOneLiter-schematic.pdf
+          asset_content_type: application/pdf
